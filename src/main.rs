@@ -26,7 +26,11 @@ struct Args {
 
     ///Path to drawio binary. Defaults to "drawio"
     #[arg(long)]
-    drawio: Option<String>
+    drawio: Option<String>,
+
+    ///If true, use lower resolution for faster latex build times
+    #[arg(long,default_value="true")]
+    draft: bool
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +103,11 @@ fn main() -> Result<(), Whatever> {
 
     let args = Args::parse();
 
-    let  drawio_flags : Vec<String> = Vec::from(["-x".to_string(), "-f".to_string(), "png".to_string(), "-t".to_string(), "-s".to_string(), "5".to_string()]);
+    let  mut drawio_flags : Vec<String> = Vec::from(["-x".to_string(), "-f".to_string(), "png".to_string(), "-t".to_string()]);
+    if !args.draft {
+        drawio_flags.push("-s".to_string());
+        drawio_flags.push("5".to_string());
+    }
 
     let drawio_path = match args.drawio {
         Some(v) => v,
