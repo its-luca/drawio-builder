@@ -29,7 +29,7 @@ struct Args {
     drawio: Option<String>,
 
     ///If true, use lower resolution for faster latex build times
-    #[arg(long,default_value="true")]
+    #[arg(long,default_value="false")]
     draft: bool
 }
 
