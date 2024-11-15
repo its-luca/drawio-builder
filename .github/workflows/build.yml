@@ -20,16 +20,15 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ matrix.rust }}
-        override: true
 
     - name: Cache Cargo registry
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cargo/registry
         key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
@@ -37,7 +36,7 @@ jobs:
           cargo-registry-${{ runner.os }}
 
     - name: Cache Cargo index
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cargo/git
         key: cargo-index-${{ runner.os }}
