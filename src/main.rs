@@ -64,6 +64,11 @@ struct Args {
     #[arg(long,default_value="false")]
     draft: bool,
 
+    ///Drawio build args. Separate flags and flag value with whitespaces.
+    /// /// Don't forget to put the whole thing in quotes
+    #[arg(long,default_value="-x -f png -t -s 5")]
+    build_args : String,
+
     ///Path to optional config file
     #[arg(long)]
     config: Option<String>,
@@ -238,10 +243,23 @@ fn main() -> Result<(), AppError> {
 
     let args = Args::parse();
 
-    let  mut drawio_flags : Vec<String> = Vec::from(["-x".to_string(), "-f".to_string(), "png".to_string(), "-t".to_string()]);
-    if !args.draft {
-        drawio_flags.push("-s".to_string());
-        drawio_flags.push("5".to_string());
+    let  mut drawio_flags : Vec<String> = args.build_args.split(" ").map(|v| v.to_string()).collect();
+
+    //If draft mode, change scale to 1
+    if args.draft {
+        let mut scale_flag_idx = None;
+        for (i,v) in drawio_flags.iter().enumerate() {
+            if v == "-s" || v == "--scale" {
+                scale_flag_idx = Some(i);
+                break;
+            }
+        }
+        if let Some(idx) = scale_flag_idx {
+            if drawio_flags.len() < idx + 1 {
+                whatever!("Scale flag does not have argument");
+            }
+            drawio_flags[idx+1] = "1".to_string();
+        }
     }
 
     let config: DrawioConfig = match args.config {
