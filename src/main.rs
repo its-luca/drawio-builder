@@ -1,5 +1,7 @@
 use regex::Regex;
+use serde::Deserialize;
 use snafu::prelude::*;
+use std::collections::HashMap;
 use std::fs::{self, create_dir_all, File};
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
@@ -60,10 +62,30 @@ struct Args {
 
     ///If true, use lower resolution for faster latex build times
     #[arg(long,default_value="false")]
-    draft: bool
+    draft: bool,
+
+    ///Path to optional config file
+    #[arg(long)]
+    config: Option<String>,
 }
 
+#[derive(Deserialize,Debug)]
+struct DrawioFileConfig {
+    ///Name of the file for which this config should be applied
+    /// NOT the whole path, just the filename
+    name: String,
+    ///Specifies the order in which layers should be exported
+    ///outer array: export steps, inner array: layers for that step
+    /// no append semantics; specify all layers for each step
+    order: Vec<Vec<u8>>,
+}
 
+/// User specified tweaks for the build process
+#[derive(Default,Deserialize,Debug)]
+struct DrawioConfig {
+    ///Config overrides for individual drawio files
+    inidividual_configs : Option<Vec<DrawioFileConfig>>,
+}
 
 struct DrawioProcess {
     output_path: PathBuf,
@@ -72,20 +94,54 @@ struct DrawioProcess {
     handle: Child
 }
 
-fn run_command(drawio_path : &str, file: &PathBuf, flags: &Vec<String>, layer_count: usize, out_dir: &str) -> Result<(),DrawioError> {
+enum LayerConfig {
+    ///Number of layers. Exports [0],[0,1],[0,1,2]...
+    Incremental(usize),
+    ///For each export step, specify the layers and their oder
+    /// Example: [ [0,2],[0,1]] will export layers 0,2 in first step
+    /// and layers 0,1 in second step
+    Custom(Vec<Vec<u8>>),
+}
+struct BuildConfig {
+    ///general flags that or passed to drawio. DO NOT pass layer configs here
+    flags: Vec<String>,
+    layer_config: LayerConfig
+}
+
+
+/// Convert LayerConfig to strings that can be passed to the drawio cli
+fn assemble_layer_cli_flag(config: &LayerConfig) -> Vec<String> {
+    let mut result = Vec::new();
+    match config {
+        LayerConfig::Incremental(layer_count) => {
+            let mut buf: String  = "0".to_string();
+            result.push(buf.clone());
+            for layer in 1..*layer_count {
+                buf += &format!(",{}",layer); 
+                result.push(buf.clone());
+            }
+            result
+        },
+        LayerConfig::Custom(v) => {
+            v.iter().map(|inner| inner.iter().map(|num| format!("{}",num)).collect::<Vec<String>>().join(",")).collect()
+        
+        },
+    }
+}
+
+fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_dir: &str) -> Result<(),DrawioError> {
     // Build the command
     let file_name = file.file_stem().unwrap().to_str().unwrap();
     let full_file_path = file.as_path().as_os_str().to_str().unwrap();
 
     let mut handles = Vec::new();
+    let export_steps = assemble_layer_cli_flag(&config.layer_config);
     // Add the file and flags to the command
-    let mut layer_flag = Vec::new();
-    for layer in 0..layer_count {
-        layer_flag.push(format!("{}",layer));        
+    for (idx,step) in export_steps.iter().enumerate() {
 
-        let mut command = Command::new(drawio_path);
+        let mut command = Command::new(drawio_binary);
 
-        let output_path = Path::new(out_dir).join(format!("{}-{}.png",file_name,layer));
+        let output_path = Path::new(out_dir).join(format!("{}-{}.png",file_name,idx));
 
         //skip build if output file is older than input file, i.e. no changes since built
         let mut old_modified_time = None;
@@ -93,17 +149,14 @@ fn run_command(drawio_path : &str, file: &PathBuf, flags: &Vec<String>, layer_co
             let out_modified = output_path.metadata().unwrap().modified().unwrap();
             let in_modified = file.metadata().unwrap().modified().unwrap();
             if out_modified.ge(&in_modified) {
-                if layer != layer_count-1 {
-                    layer_flag.push(",".to_string());
-                }
                 continue;
             }
             old_modified_time = Some(out_modified);
         }
         
-        command.args(flags).arg("-o").arg(&output_path);
+        command.args(&config.flags).arg("-o").arg(&output_path);
         command.arg("--layers");
-        command.arg(layer_flag.concat());
+        command.arg(&step);
         
         command.arg(full_file_path);
         command.stdout(Stdio::piped());
@@ -132,9 +185,6 @@ fn run_command(drawio_path : &str, file: &PathBuf, flags: &Vec<String>, layer_co
                 exit_code: ExitStatus::from_raw(-1),
             })?,
         });
-        if layer != layer_count-1 {
-            layer_flag.push(",".to_string());
-        }
     }
 
     for x in handles {
@@ -194,6 +244,25 @@ fn main() -> Result<(), AppError> {
         drawio_flags.push("5".to_string());
     }
 
+    let config: DrawioConfig = match args.config {
+        Some(path) => {
+            serde_json::from_reader(File::open(&path).whatever_context::<String,AppError>(format!("Failed to open config file {}",path))?).whatever_context::<&str,AppError>("Failed to parse config file")?
+
+        },
+        None => DrawioConfig::default(),
+    };
+
+
+    //Later we need to quickly check if there is a config override for a given file
+    let mut file_to_config :HashMap<String, &DrawioFileConfig> = HashMap::new();
+    if let Some(overrides) = &config.inidividual_configs {
+        for x in overrides {
+            file_to_config.insert(x.name.clone(), x);
+        }
+    }
+
+
+
     let drawio_path = match args.drawio {
         Some(v) => v,
         None => "drawio".to_string(),
@@ -231,8 +300,21 @@ fn main() -> Result<(), AppError> {
         
     }
 
-    let first_err = drawio_files.par_iter().try_for_each(|(path,layer_count)| {
-        run_command(&drawio_path,path, &drawio_flags, *layer_count,&args.output)
+    let first_err = drawio_files.par_iter().try_for_each(|(input_path,layer_count)| {
+        let file_name = input_path.file_name().expect(&format!("unexpected malformed path {:?}. Should no longer happen at this stage",input_path)).to_str().unwrap().to_string();
+        let config = match file_to_config.get(&file_name) {
+            Some(custom_config) => {
+                BuildConfig{
+                    flags: drawio_flags.clone(),
+                    layer_config: LayerConfig::Custom(custom_config.order.clone()),
+                }
+            },
+            None => BuildConfig{
+                flags: drawio_flags.clone(),
+                layer_config: LayerConfig::Incremental(*layer_count),
+            },
+        };
+        run_command(&drawio_path,input_path, &config,&args.output)
     });
     match first_err {
         Ok(_) => eprintln!("Build all figures"),
@@ -247,4 +329,30 @@ fn main() -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    //fn assemble_layer_flag(config: LayerConfig) -> Vec<String> {
+
+    #[test]
+    fn test_assemble_layer_flag_incremental() {
+            let want = vec!["0".to_string()];
+            let got = assemble_layer_cli_flag(&LayerConfig::Incremental(1));
+            assert_eq!(want,got);
+            let want = vec!["0".to_string(),"0,1".to_string(),"0,1,2".to_string()];
+            let got = assemble_layer_cli_flag(&LayerConfig::Incremental(3));
+            assert_eq!(want,got);
+    }
+
+    #[test]
+    fn test_assemble_layer_flag_custom() {
+        let want = vec!["1,0".to_string(),"2,5".to_string()];
+        let got = assemble_layer_cli_flag(&LayerConfig::Custom(vec![vec![1,0],vec![2,5]]));
+        assert_eq!(want,got);
+    }
 }
