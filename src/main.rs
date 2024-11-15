@@ -4,7 +4,6 @@ use snafu::prelude::*;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all, File};
 use std::io::Write;
-use std::os::unix::process::ExitStatusExt;
 use std::time::SystemTime;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -21,7 +20,8 @@ struct DrawioError {
     output_path: PathBuf,
     stderr: Vec<u8>,
     stdout: Vec<u8>,
-    exit_code: ExitStatus,
+    ///If "None" we failed before terminating the program
+    exit_code: Option<ExitStatus>,
 }
  
 #[derive(Debug, Snafu)]
@@ -172,7 +172,7 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
             output_path: output_path.clone(),
             stderr: Vec::new(),
             stdout: Vec::new(),
-            exit_code: ExitStatus::from_raw(-1),
+            exit_code: None,
         })?);
 
         eprintln!("Executing command {:?}",command);
@@ -187,7 +187,7 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
                 output_path : output_path.clone(),
                 stderr: Vec::new(),
                 stdout: Vec::new(),
-                exit_code: ExitStatus::from_raw(-1),
+                exit_code: None,
             })?,
         });
     }
@@ -200,7 +200,7 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
             output_path: x.output_path.clone(),
             stderr: Vec::new(),
             stdout: Vec::new(),
-            exit_code: ExitStatus::from_raw(-1),
+            exit_code: None,
         })?;
         let mut error_template = DrawioError{
             message: "generic error".to_string(),
@@ -208,7 +208,7 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
             output_path: x.output_path.clone(),
             stderr: output.stderr,
             stdout: output.stdout,
-            exit_code: output.status,
+            exit_code: None,
         };
          if !output.status.success() {
             error_template.message = "error exit code".to_string();
