@@ -199,7 +199,7 @@ fn main() -> Result<(), AppError> {
         None => "drawio".to_string(),
     };
 
-    let _ = Command::new(drawio_path.clone()).output().whatever_context::<&str, AppError>("Failed to locate drawio binary. Please specify path")?;
+    let _ = Command::new(drawio_path.clone()).arg("--version").output().whatever_context::<&str, AppError>("Failed to locate drawio binary. Please specify path")?;
 
     create_dir_all(&args.output).whatever_context::<std::string::String, AppError>(format!("Failed to create output dir at {}", &args.output))?;
 
