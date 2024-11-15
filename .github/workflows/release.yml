@@ -2,9 +2,8 @@
 
 on:
     release:
-      types: [created]
-  
-  jobs:
+      types: [created] 
+jobs:
     release:
       name: release ${{ matrix.target }}
       runs-on: ubuntu-latest
