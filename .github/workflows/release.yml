@@ -1,6 +1,10 @@
 on:
-  release:
-    types: [created] 
+  push:
+    branches:
+      - main 
+    tags:
+      - 'v*.*.*'
+
 
 jobs:
   release:
