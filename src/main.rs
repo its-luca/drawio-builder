@@ -4,12 +4,13 @@ use snafu::prelude::*;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all, File};
 use std::io::Write;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use clap::Parser;
 use rayon::prelude::*;
+use indicatif::{ProgressBar, ProgressStyle};
 
 
 #[derive(Debug,Snafu)]
@@ -134,7 +135,7 @@ fn assemble_layer_cli_flag(config: &LayerConfig) -> Vec<String> {
     }
 }
 
-fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_dir: &str) -> Result<(),DrawioError> {
+fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_dir: &str,progress : &ProgressBar) -> Result<(),DrawioError> {
     // Build the command
     let file_name = file.file_stem().unwrap().to_str().unwrap();
     let full_file_path = file.as_path().as_os_str().to_str().unwrap();
@@ -175,7 +176,6 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
             exit_code: None,
         })?);
 
-        eprintln!("Executing command {:?}",command);
     
         handles.push(DrawioProcess{
             output_path: output_path.clone(),
@@ -202,6 +202,7 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
             stdout: Vec::new(),
             exit_code: None,
         })?;
+        progress.inc(1);
         let mut error_template = DrawioError{
             message: "generic error".to_string(),
             input_path: x.input_path.clone(),
@@ -303,7 +304,6 @@ fn main() -> Result<(), AppError> {
             },
             None => continue,
         }
-        println!("Processing {:?}", &dir_entry);
 
 
         let content = fs::read_to_string(&dir_entry.path()).whatever_context::<std::string::String, AppError>(format!("failed to read file {:?}", &dir_entry.path()))?;
@@ -318,8 +318,14 @@ fn main() -> Result<(), AppError> {
         
     }
 
+    let task_count :usize = drawio_files.iter().map(|(_,steps)| *steps).sum();
+    let progress_bar = ProgressBar::new(task_count as u64);
+    progress_bar.set_style(ProgressStyle::with_template("[{elapsed}] {wide_bar} {pos:>7}/{len:7} {msg}").expect("progress bar template failed"));
+    progress_bar.enable_steady_tick(Duration::from_millis(200));
+    progress_bar.inc(0);
     let first_err = drawio_files.par_iter().try_for_each(|(input_path,layer_count)| {
         let file_name = input_path.file_name().expect(&format!("unexpected malformed path {:?}. Should no longer happen at this stage",input_path)).to_str().unwrap().to_string();
+
         let config = match file_to_config.get(&file_name) {
             Some(custom_config) => {
                 BuildConfig{
@@ -332,10 +338,10 @@ fn main() -> Result<(), AppError> {
                 layer_config: LayerConfig::Incremental(*layer_count),
             },
         };
-        run_command(&drawio_path,input_path, &config,&args.output)
+        run_command(&drawio_path,input_path, &config,&args.output,&progress_bar)
     });
     match first_err {
-        Ok(_) => eprintln!("Build all figures"),
+        Ok(_) => progress_bar.finish_with_message("Build all figures"),
         Err(e) => {
             let log_path = PathBuf::from(&args.output).join("drawio-builder-errors.log");
             let mut log_file = File::create(&log_path).whatever_context::<String,AppError>(format!("At least one figure failed to build and we failed to create the error log at {:?}",log_path))?;

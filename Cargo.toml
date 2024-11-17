@@ -10,3 +10,4 @@ rayon = "1.5"
 clap = { version = "4.5.20", features = ["derive"] }
 snafu = "0.8.5"
 regex = "1.11.0"
+indicatif = {version = "0.17.9", features = ["rayon"]}
