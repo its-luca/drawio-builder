@@ -34,6 +34,8 @@ By default, `drawio-builder` will incrementally export the layers of a figure, i
 If you want to override this behavior for certain figures, you can use the  `--config` with a dedicated json config file.
 See `test-data/custom_config.json` for an example.
 
+To speed up your Latex build times, you can use the `--draft` option which will export the figures in a lower resolution.
+
 ### Gotchas
 
 - You always need to rename the default "Background" layer to something else. Otherwise, it won't get picked up during the export
