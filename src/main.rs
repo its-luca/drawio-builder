@@ -240,6 +240,35 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
 
 }
 
+
+/// Check well known locations and `hint` for drawio binary. Hint is preferred
+/// Returns first matching path
+fn search_drawio_binary(hint: Option<String>) -> Option<String> {
+    let mut candidates = vec![
+        //macos
+        "/Applications/draw.io.app/Contents/MacOS//draw.io".to_string(),
+        //generic 1
+        "drawio".to_string(),
+        //generic 2
+        "draw.io".to_string(),
+    ];
+
+
+    //insert at front is important so that hint is preferred over the other paths
+    if let Some(hint) = hint {
+        candidates.insert(0, hint);
+    }
+
+    for c in &candidates {
+        match Command::new(c).arg("--version").output() {
+            Ok(_) => return Some(c.to_string()),
+            Err(_) => (),
+        }
+    }
+
+    None
+}
+
 fn main() -> Result<(), AppError> {
 
     let args = Args::parse();
@@ -281,13 +310,11 @@ fn main() -> Result<(), AppError> {
     }
 
 
-
-    let drawio_path = match args.drawio {
+    let drawio_path = match search_drawio_binary(args.drawio) {
         Some(v) => v,
-        None => "drawio".to_string(),
+        None => whatever!("Failed to locate drawio binary. Please specify path with \"--drawio\" cli argument"),
     };
 
-    let _ = Command::new(drawio_path.clone()).arg("--version").output().whatever_context::<&str, AppError>("Failed to locate drawio binary. Please specify path")?;
 
     create_dir_all(&args.output).whatever_context::<std::string::String, AppError>(format!("Failed to create output dir at {}", &args.output))?;
 
@@ -341,7 +368,7 @@ fn main() -> Result<(), AppError> {
         run_command(&drawio_path,input_path, &config,&args.output,&progress_bar)
     });
     match first_err {
-        Ok(_) => progress_bar.finish_with_message("Build all figures"),
+        Ok(_) => progress_bar.finish_with_message("Built all figures"),
         Err(e) => {
             let log_path = PathBuf::from(&args.output).join("drawio-builder-errors.log");
             let mut log_file = File::create(&log_path).whatever_context::<String,AppError>(format!("At least one figure failed to build and we failed to create the error log at {:?}",log_path))?;
