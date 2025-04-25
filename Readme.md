@@ -41,3 +41,4 @@ To speed up your Latex build times, you can use the `--draft` option which will 
 - You always need to rename the default "Background" layer to something else. Otherwise, it won't get picked up during the export
 - "Higher" layers are always displayed above lower layers. To work around this you might want to manually specify an export order (See Advanced usage).
 - To prevent figures from changing size when unveiling new elements, place an invisible rectangle on the first layer. Please let me know if you find a better workaround.
+- If you use `\only` or similar commands to implement animations in latex beamer, the images sometimes slightly jump in between slides. This can be avoided by placing a `%` at the end of each `\only<x>{\includgraphics{...}}` line.
