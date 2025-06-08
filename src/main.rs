@@ -9,7 +9,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use clap::Parser;
-use rayon::prelude::*;
+use rayon::{prelude::*, ThreadPoolBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 
 
@@ -66,13 +66,18 @@ struct Args {
     draft: bool,
 
     ///Drawio build args. Separate flags and flag value with whitespaces.
-    /// /// Don't forget to put the whole thing in quotes
+    ///Don't forget to put the whole thing in quotes
     #[arg(long,default_value="-x -f png -t -s 5")]
     build_args : String,
 
     ///Path to optional config file
     #[arg(long)]
     config: Option<String>,
+
+    /// Max number of parallel drawio exports. We automatically estimate a sensible default
+    /// but systems with a lower CPU to memory ratio might need a lower value
+    #[arg(long)]
+    jobs: Option<usize>,
 }
 
 #[derive(Deserialize,Debug)]
@@ -90,15 +95,102 @@ struct DrawioFileConfig {
 #[derive(Default,Deserialize,Debug)]
 struct DrawioConfig {
     ///Config overrides for individual drawio files
-    inidividual_configs : Option<Vec<DrawioFileConfig>>,
+    individual_configs : Option<Vec<DrawioFileConfig>>,
 }
 
+/// Encapsulates all information required to run a single drawio export step
+struct DrawioExportStep {
+    output_path: PathBuf,
+    input_path: PathBuf,
+    old_modified_time: Option<SystemTime>,
+    command: Command
+}
+
+impl DrawioExportStep {
+    fn new(output_path: PathBuf, input_path: PathBuf, old_modified_time: Option<SystemTime>, command: Command) -> Self {
+        DrawioExportStep {
+            output_path,
+            input_path,
+            old_modified_time,
+            command,
+        }
+    }
+
+    /// Spawn the drawio process for this export step
+    fn spawn(mut self) -> Result<DrawioProcess, DrawioError> {
+        let p = DrawioProcess{
+            output_path: self.output_path.clone(),
+            input_path: self.input_path.clone(),
+            old_modified_time: self.old_modified_time,
+            handle: self.command.spawn().map_err(|e| DrawioError{
+                message: format!("failed to spawn drawio process : {:?}",e).to_string(),
+                input_path: self.input_path.clone(),
+                output_path : self.output_path.clone(),
+                stderr: Vec::new(),
+                stdout: Vec::new(),
+                exit_code: None,
+            })?
+        };
+        Ok(p)
+    }
+    
+}
+
+/// A running drawio process
 struct DrawioProcess {
     output_path: PathBuf,
     input_path: PathBuf,
     old_modified_time: Option<SystemTime>,
     handle: Child
 }
+
+impl DrawioProcess {
+
+    /// Waits for the process to finish and checks for errors
+    pub fn wait(self) -> Result<(),DrawioError> {
+        // Execute the command
+         let output = self.handle.wait_with_output().map_err(|e| DrawioError{
+            message: format!("process termination error : {:?}",e).to_string(),
+            input_path: self.input_path.clone(),
+            output_path: self.output_path.clone(),
+            stderr: Vec::new(),
+            stdout: Vec::new(),
+            exit_code: None,
+        })?;
+        let mut error_template = DrawioError{
+            message: "generic error".to_string(),
+            input_path: self.input_path.clone(),
+            output_path: self.output_path.clone(),
+            stderr: output.stderr,
+            stdout: output.stdout,
+            exit_code: None,
+        };
+         if !output.status.success() {
+            error_template.message = "error exit code".to_string();
+             return Err(error_template);
+         }
+       
+         //drawio's exit code does not reflect if there has been an error
+         //For now, we assume that if the output file got created/updated everything succeeded
+         match self.old_modified_time {
+            Some(old_modified_time) => {
+                let new_modified_time = self.output_path.metadata().unwrap().modified().unwrap();
+                if old_modified_time.ge(&new_modified_time) {
+                    error_template.message = "output file was not updated".to_string();
+                    return Err(error_template)
+                }
+            },
+            //file did not previously exist
+            None => {
+                if !self.output_path.exists() {
+                    error_template.message = "output file was not created".to_string();
+                    return Err(error_template);
+                }
+            },
+        };
+        Ok(())
+    }
+} 
 
 enum LayerConfig {
     ///Number of layers. Exports [0],[0,1],[0,1,2]...
@@ -135,12 +227,14 @@ fn assemble_layer_cli_flag(config: &LayerConfig) -> Vec<String> {
     }
 }
 
-fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_dir: &str,progress : &ProgressBar) -> Result<(),DrawioError> {
-    // Build the command
+
+/// Create a invokable Command for each export step
+fn create_job(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_dir: &str) -> Result<Vec<DrawioExportStep>, AppError>{
+  // Build the command
     let file_name = file.file_stem().unwrap().to_str().unwrap();
     let full_file_path = file.as_path().as_os_str().to_str().unwrap();
 
-    let mut handles = Vec::new();
+    let mut jobs = Vec::new();
     let export_steps = assemble_layer_cli_flag(&config.layer_config);
     // Add the file and flags to the command
     for (idx,step) in export_steps.iter().enumerate() {
@@ -176,68 +270,15 @@ fn run_command(drawio_binary : &str, file: &PathBuf, config: &BuildConfig, out_d
             exit_code: None,
         })?);
 
-    
-        handles.push(DrawioProcess{
-            output_path: output_path.clone(),
-            input_path: PathBuf::from(full_file_path),
+        jobs.push(DrawioExportStep::new(
+            output_path.clone(),
+            PathBuf::from(full_file_path),
             old_modified_time,
-            handle: command.spawn().map_err(|e| DrawioError{
-                message: format!("failed to spawn drawio process : {:?}",e).to_string(),
-                input_path: PathBuf::from(full_file_path),
-                output_path : output_path.clone(),
-                stderr: Vec::new(),
-                stdout: Vec::new(),
-                exit_code: None,
-            })?,
-        });
+            command,
+        ));
     }
 
-    for x in handles {
-         // Execute the command
-         let output = x.handle.wait_with_output().map_err(|e| DrawioError{
-            message: format!("process termination error : {:?}",e).to_string(),
-            input_path: x.input_path.clone(),
-            output_path: x.output_path.clone(),
-            stderr: Vec::new(),
-            stdout: Vec::new(),
-            exit_code: None,
-        })?;
-        progress.inc(1);
-        let mut error_template = DrawioError{
-            message: "generic error".to_string(),
-            input_path: x.input_path.clone(),
-            output_path: x.output_path.clone(),
-            stderr: output.stderr,
-            stdout: output.stdout,
-            exit_code: None,
-        };
-         if !output.status.success() {
-            error_template.message = "error exit code".to_string();
-             return Err(error_template);
-         }
-       
-         //drawio's exit code does not reflect if there has been an error
-         //For now, we assume that if the output file got created/updated everything succeeded
-         match x.old_modified_time {
-            Some(old_modified_time) => {
-                let new_modified_time = x.output_path.metadata().unwrap().modified().unwrap();
-                if old_modified_time.ge(&new_modified_time) {
-                    error_template.message = "output file was not updated".to_string();
-                    return Err(error_template)
-                }
-            },
-            //file did not previously exist
-            None => {
-                if !x.output_path.exists() {
-                    error_template.message = "output file was not created".to_string();
-                    return Err(error_template);
-                }
-            },
-        };
- 
-    }
-    Ok(())
-
+    Ok(jobs)
 }
 
 
@@ -303,7 +344,7 @@ fn main() -> Result<(), AppError> {
 
     //Later we need to quickly check if there is a config override for a given file
     let mut file_to_config :HashMap<String, &DrawioFileConfig> = HashMap::new();
-    if let Some(overrides) = &config.inidividual_configs {
+    if let Some(overrides) = &config.individual_configs {
         for x in overrides {
             file_to_config.insert(x.name.clone(), x);
         }
@@ -345,13 +386,11 @@ fn main() -> Result<(), AppError> {
         
     }
 
-    let task_count :usize = drawio_files.iter().map(|(_,steps)| *steps).sum();
-    let progress_bar = ProgressBar::new(task_count as u64);
-    progress_bar.set_style(ProgressStyle::with_template("[{elapsed}] {wide_bar} {pos:>7}/{len:7} {msg}").expect("progress bar template failed"));
-    progress_bar.enable_steady_tick(Duration::from_millis(200));
-    progress_bar.inc(0);
-    let first_err = drawio_files.par_iter().try_for_each(|(input_path,layer_count)| {
-        let file_name = input_path.file_name().expect(&format!("unexpected malformed path {:?}. Should no longer happen at this stage",input_path)).to_str().unwrap().to_string();
+    let mut jobs = Vec::new();
+
+    // Parse config and create runnable command for each export step
+    for (input_path, layer_count) in &drawio_files {
+    let file_name = input_path.file_name().expect(&format!("unexpected malformed path {:?}. Should no longer happen at this stage",input_path)).to_str().unwrap().to_string();
 
         let config = match file_to_config.get(&file_name) {
             Some(custom_config) => {
@@ -365,8 +404,32 @@ fn main() -> Result<(), AppError> {
                 layer_config: LayerConfig::Incremental(*layer_count),
             },
         };
-        run_command(&drawio_path,input_path, &config,&args.output,&progress_bar)
+        let local_jobs = create_job(&drawio_path, input_path,&config,&args.output)?;
+
+        jobs.extend(local_jobs);
+    }
+
+
+    let task_count :usize = drawio_files.iter().map(|(_,steps)| *steps).sum();
+    let progress_bar = ProgressBar::new(task_count as u64);
+    progress_bar.set_style(ProgressStyle::with_template("[{elapsed}] {wide_bar} {pos:>7}/{len:7} {msg}").expect("progress bar template failed"));
+    progress_bar.enable_steady_tick(Duration::from_millis(200));
+    progress_bar.inc(0);
+
+    if let Some(jobs) = args.jobs {
+        ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build_global()
+            .whatever_context::<String,AppError>(format!("Failed to create Threadpool that limits to {} threads", jobs))?;
+    }
+    
+    // Run each export step
+    let first_err = jobs.into_par_iter().try_for_each(|command| {
+        let res = command.spawn()?.wait();
+        progress_bar.inc(1);
+        res
     });
+
     match first_err {
         Ok(_) => progress_bar.finish_with_message("Built all figures"),
         Err(e) => {
