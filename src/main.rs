@@ -231,10 +231,12 @@ fn main() -> Result<(), AppError> {
     ))?;
 
     let mut drawio_files = Vec::new();
-    let layer_re = Regex::new(r#"<mxCell id=".*" value=".*" parent="." />"#)
+    //visible layers don't have the "visible" attribute but invisible ones do have it.
+    //THus the optional match
+    let layer_re = Regex::new(r#"<mxCell id=".*" value=".*" parent="."( visible="[0,1]")? />"#)
         .whatever_context::<std::string::String, AppError>(
-            "failed to compile layer extraction regexp".to_string(),
-        )?;
+        "failed to compile layer extraction regexp".to_string(),
+    )?;
     for dir_entry in fs::read_dir(&args.input).whatever_context::<std::string::String, AppError>(
         format!("error listing files in folder {}", &args.input),
     )? {
