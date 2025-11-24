@@ -1,8 +1,36 @@
 {
-    "inidividual_configs" : [
+    "individual_configs": [
         {
             "name": "nonce-truncation.drawio",
-            "order": [[2],[2,3],[0]]
+            "order": [
+                [
+                    2
+                ],
+                [
+                    2,
+                    3
+                ],
+                [
+                    0
+                ]
+            ]
+        },
+        {
+            "name": "custom-order.drawio",
+            "order": [
+                [
+                    2
+                ],
+                [
+                    2,
+                    1
+                ],
+                [
+                    2,
+                    1,
+                    1
+                ]
+            ]
         }
     ]
 }
