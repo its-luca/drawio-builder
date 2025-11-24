@@ -155,6 +155,8 @@ fn search_drawio_binary(hint: Option<String>) -> Option<String> {
     let mut candidates = vec![
         //macos
         "/Applications/draw.io.app/Contents/MacOS//draw.io".to_string(),
+        //Windows
+        "C:\\Program Files\\draw.io\\draw.io.exe".to_string(),
         //generic 1
         "drawio".to_string(),
         //generic 2
@@ -323,8 +325,8 @@ fn main() -> Result<(), AppError> {
         Ok(_) => progress_bar.finish_with_message("Built all figures"),
         Err(e) => {
             let log_path = PathBuf::from(&args.output).join("drawio-builder-errors.log");
-            let mut log_file = File::create(&log_path)
-                .whatever_context::<String, AppError>(format!(
+            let mut log_file =
+                File::create(&log_path).whatever_context::<String, AppError>(format!(
                 "At least one figure failed to build and we failed to create the error log at {:?}",
                 log_path
             ))?;
@@ -374,10 +376,8 @@ mod test {
     #[test]
     fn test_assemble_layer_flag_custom() {
         let want = vec!["1,0".to_string(), "2,5".to_string()];
-        let got = assemble_layer_cli_flag(&drawio::LayerConfig::Custom(vec![
-            vec![1, 0],
-            vec![2, 5],
-        ]));
+        let got =
+            assemble_layer_cli_flag(&drawio::LayerConfig::Custom(vec![vec![1, 0], vec![2, 5]]));
         assert_eq!(want, got);
     }
 }
