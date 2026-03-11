@@ -447,7 +447,7 @@ mod test {
         // A very high version should never trigger an update message
         let result = check_for_updates("v999.999.999");
         assert!(
-            result.is_none() || result.as_ref().map_or(true, |_| false),
+            result.is_none(),
             "Should not suggest an update for a very high version"
         );
     }
