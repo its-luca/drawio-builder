@@ -11,6 +11,7 @@ use std::fs::{self, create_dir_all, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
 #[derive(Debug, Snafu)]
@@ -24,8 +25,46 @@ enum AppError {
     },
 }
 
+/// Returns the version embedded at build time via the DRAWIO_BUILDER_VERSION
+/// environment variable, falling back to the Cargo package version.
+fn get_version() -> &'static str {
+    option_env!("DRAWIO_BUILDER_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+/// Check if a newer version is available on GitHub.
+/// Returns a user-facing message if an update is available, or None otherwise.
+/// Silently returns None on any error (network, parsing, etc.).
+fn check_for_updates(current_version: &str) -> Option<String> {
+    let current = current_version.trim_start_matches('v');
+    let current_semver = semver::Version::parse(current).ok()?;
+
+    let response = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .get("https://api.github.com/repos/its-luca/drawio-builder/releases/latest")
+        .set("Accept", "application/vnd.github.v3+json")
+        .set("User-Agent", "drawio-builder")
+        .call()
+        .ok()?;
+
+    let body: serde_json::Value = serde_json::from_str(&response.into_string().ok()?).ok()?;
+    let tag_name = body["tag_name"].as_str()?;
+    let latest = tag_name.trim_start_matches('v');
+    let latest_semver = semver::Version::parse(latest).ok()?;
+
+    if latest_semver > current_semver {
+        Some(format!(
+            "Note: A newer version of drawio-builder is available: {} (current: v{}). \
+             Visit https://github.com/its-luca/drawio-builder/releases/latest to download.",
+            tag_name, current
+        ))
+    } else {
+        None
+    }
+}
+
 #[derive(Parser)]
-#[command(version,about,long_about=None)]
+#[command(version = get_version(), about, long_about = None)]
 struct Args {
     ///Path to folder with input files
     #[arg(short, long, default_value = "./")]
@@ -179,6 +218,10 @@ fn search_drawio_binary(hint: Option<String>) -> Option<String> {
 }
 
 fn main() -> Result<(), AppError> {
+    // Spawn background thread to check for updates
+    let update_version = get_version().to_string();
+    let update_handle = thread::spawn(move || check_for_updates(&update_version));
+
     let args = Args::parse();
 
     let mut drawio_flags: Vec<String> = args.build_args.split(" ").map(|v| v.to_string()).collect();
@@ -357,6 +400,11 @@ fn main() -> Result<(), AppError> {
         }
     }
 
+    // Print update notification if a newer version is available
+    if let Ok(Some(msg)) = update_handle.join() {
+        eprintln!("{}", msg);
+    }
+
     Ok(())
 }
 
@@ -381,5 +429,26 @@ mod test {
         let got =
             assemble_layer_cli_flag(&drawio::LayerConfig::Custom(vec![vec![1, 0], vec![2, 5]]));
         assert_eq!(want, got);
+    }
+
+    #[test]
+    fn test_get_version_returns_valid_semver() {
+        let version = get_version();
+        let stripped = version.trim_start_matches('v');
+        assert!(
+            semver::Version::parse(stripped).is_ok(),
+            "get_version() should return a valid semver string, got: {}",
+            version
+        );
+    }
+
+    #[test]
+    fn test_check_for_updates_no_update_for_high_version() {
+        // A very high version should never trigger an update message
+        let result = check_for_updates("v999.999.999");
+        assert!(
+            result.is_none(),
+            "Should not suggest an update for a very high version"
+        );
     }
 }
