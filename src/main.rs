@@ -274,9 +274,9 @@ fn main() -> Result<(), AppError> {
     ))?;
 
     let mut drawio_files = Vec::new();
-    //visible layers don't have the "visible" attribute but invisible ones do have it.
-    //THus the optional match
-    let layer_re = Regex::new(r#"<mxCell id=".*" value=".*" parent="."( visible="[0,1]")? />"#)
+    // Layers are self-closing mxCell elements with a single-character parent (the root "0").
+    // Attribute order varies, so we match parent="." anywhere in the tag rather than fixing the order.
+    let layer_re = Regex::new(r#"<mxCell\b[^>]*\bparent="."[^>]*/>"#)
         .whatever_context::<std::string::String, AppError>(
         "failed to compile layer extraction regexp".to_string(),
     )?;
